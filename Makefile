@@ -3,6 +3,7 @@ BUILD_DIR := $(ROOT_DIR)/build
 DIST_DIR := $(BUILD_DIR)/dist
 GIT_COMMIT := $(shell git rev-parse HEAD)
 
+AWS_REGION ?= us-west-2
 S3_BUCKET ?= infinity-artifacts
 # Default to putting artifacts under a random directory, which will get cleaned up automatically:
 S3_PREFIX ?= autodelete7d/spark/test-`date +%Y%m%d-%H%M%S`-`cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 16 | head -n 1`
@@ -18,52 +19,10 @@ docker-build:
 	docker build -t $(DOCKER_BUILD_IMAGE) .
 	echo $(DOCKER_BUILD_IMAGE) > $@
 
-# Pulls the spark distribution listed in the manifest as default
-SPARK_DIST_URI ?= $(shell jq ".default_spark_dist.uri" "$(ROOT_DIR)/manifest.json")
-manifest-dist:
-	mkdir -p $(DIST_DIR)
-	pushd $(DIST_DIR)
-	wget $(SPARK_DIST_URI)
-	popd
-
 HADOOP_VERSION ?= $(shell jq ".default_spark_dist.hadoop_version" "$(ROOT_DIR)/manifest.json")
-
 SPARK_DIR ?= $(ROOT_DIR)/spark
 $(SPARK_DIR):
 	git clone $(SPARK_REPO_URL) $(SPARK_DIR)
-
-# Builds a quick dev version of spark from the mesosphere fork
-dev-dist: $(SPARK_DIR)
-	pushd $(SPARK_DIR)
-	rm -rf spark-*.tgz
-	build/sbt -Pmesos "-Phadoop-$(HADOOP_VERSION)" -Phive -Phive-thriftserver package
-	rm -rf /tmp/spark-SNAPSHOT*
-	mkdir -p /tmp/spark-SNAPSHOT/jars
-	cp -a assembly/target/scala*/jars/* /tmp/spark-SNAPSHOT/jars
-	mkdir -p /tmp/spark-SNAPSHOT/examples/jars
-	cp -a examples/target/scala*/jars/* /tmp/spark-SNAPSHOT/examples/jars
-	for f in /tmp/spark-SNAPSHOT/examples/jars/*; do
-		name=$$(basename "$$f")
-		if [ -f "/tmp/spark-SNAPSHOT/jars/$${name}" ]; then
-			rm "/tmp/spark-SNAPSHOT/examples/jars/$${name}"
-		fi;
-	done
-	cp -a data /tmp/spark-SNAPSHOT/
-	mkdir -p /tmp/spark-SNAPSHOT/conf
-	cp conf/* /tmp/spark-SNAPSHOT/conf
-	cp -a bin /tmp/spark-SNAPSHOT
-	cp -a sbin /tmp/spark-SNAPSHOT
-	cp -a python /tmp/spark-SNAPSHOT
-	popd
-	pushd /tmp
-	filename=spark-SNAPSHOT.tgz
-	find spark-SNAPSHOT/ | sort # log files
-	tar czf $${filename} spark-SNAPSHOT/
-	popd
-	mkdir -p $(DIST_DIR)
-	mv /tmp/$${filename} $(DIST_DIR)/
-	rm -rf /tmp/spark-SNAPSHOT*
-	echo "Built: $(DIST_DIR)/$${filename}"
 
 prod-dist: $(SPARK_DIR)
 	pushd $(SPARK_DIR)
@@ -75,46 +34,72 @@ prod-dist: $(SPARK_DIR)
 	fi
 	./dev/make-distribution.sh --tgz "$${MESOS_PROFILE}" "-Phadoop-$(HADOOP_VERSION)" -Pnetlib-lgpl -Psparkr -Phive -Phive-thriftserver -DskipTests
 	filename=`ls spark-*.tgz`
+	rm -rf $(DIST_DIR)
 	mkdir -p $(DIST_DIR)
 	mv $${filename} $(DIST_DIR)
 	echo "Built: $(DIST_DIR)/$${filename}"
 
-# this target serves as default dist type
+# If build/dist/ doesn't exist, creates it and downloads the spark build in manifest.json.
+# To instead use a locally built version of spark, you must run "make prod-dist".
+SPARK_DIST_URI ?= $(shell jq ".default_spark_dist.uri" "$(ROOT_DIR)/manifest.json")
 $(DIST_DIR):
-	$(MAKE) manifest-dist
+	mkdir -p $(DIST_DIR)
+	pushd $(DIST_DIR)
+	wget $(SPARK_DIST_URI)
+	popd
 
 clean-dist:
-	if [ -e "$(DIST_DIR)" ]; then
-		rm -rf $(DIST_DIR)
-	fi
+	rm -f $(ROOT_DIR)/docker-dist
+	rm -rf $(DIST_DIR)
 
 docker-login:
 	docker login --email="$(DOCKER_EMAIL)" --username="$(DOCKER_USERNAME)" --password="$(DOCKER_PASSWORD)"
 
 DOCKER_DIST_IMAGE ?= mesosphere/spark-dev:$(GIT_COMMIT)
 docker-dist: $(DIST_DIR)
-	tar xvf $(DIST_DIR)/spark-*.tgz -C $(DIST_DIR)
+	SPARK_BUILDS=`ls $(DIST_DIR)/spark-*.tgz || exit 0`
+	if [ `echo "$${SPARK_BUILDS}" | wc -w` == 1 ]; then
+		echo "Using spark: $${SPARK_BUILDS}"
+	else
+		echo "Should have a single Spark package in $(DIST_DIR), found: $${SPARK_BUILDS}"
+		echo "Delete the ones you don't want?"
+		exit 1
+	fi
+	tar xvf $${SPARK_BUILDS} -C $(DIST_DIR)
+
 	rm -rf $(BUILD_DIR)/docker
 	mkdir -p $(BUILD_DIR)/docker/dist
 	cp -r $(DIST_DIR)/spark-*/. $(BUILD_DIR)/docker/dist
 	cp -r conf/* $(BUILD_DIR)/docker/dist/conf
 	cp -r docker/* $(BUILD_DIR)/docker
-	pushd $(BUILD_DIR)/docker; \
-	docker build -t $(DOCKER_DIST_IMAGE) .; \
+
+	pushd $(BUILD_DIR)/docker
+	docker build -t $(DOCKER_DIST_IMAGE) .
 	popd
+
 	docker push $(DOCKER_DIST_IMAGE)
 	echo "$(DOCKER_DIST_IMAGE)" > $@
-
 
 cli:
 	$(ROOT_DIR)/cli/dcos-spark/build.sh
 
-
-UNIVERSE_URL_PATH ?= $(ROOT_DIR)/stub-universe-urls.txt
+UNIVERSE_URL_PATH ?= $(ROOT_DIR)/spark-universe-url
 stub-universe-url: docker-dist cli
+	if [ -n "$(HISTORY_STUB_UNIVERSE_URL)" ]; then
+		echo "Using provided History stub universe: $(HISTORY_STUB_UNIVERSE_URL)"
+		echo "$(HISTORY_STUB_UNIVERSE_URL)" > $(UNIVERSE_URL_PATH)
+	else
+		UNIVERSE_URL_PATH=$(ROOT_DIR)/stub-universe-url.tmp \
+		DOCKER_IMAGE=`cat docker-dist` \
+		TEMPLATE_DEFAULT_DOCKER_IMAGE=${DOCKER_IMAGE} \
+		TEMPLATE_HTTPS_PROTOCOL='https://' \
+		        $(ROOT_DIR)/tools/build_package.sh spark-history $(ROOT_DIR)/history aws
+		cat $(ROOT_DIR)/stub-universe-url.tmp > $(UNIVERSE_URL_PATH)
+		echo "HISTORY_STUB_UNIVERSE_URL=`cat $(ROOT_DIR)/stub-universe-url.tmp`"
+	fi
 	if [ -n "$(STUB_UNIVERSE_URL)" ]; then
 		echo "Using provided Spark stub universe: $(STUB_UNIVERSE_URL)"
-		echo "$(STUB_UNIVERSE_URL)" > $(UNIVERSE_URL_PATH)
+		echo "$(STUB_UNIVERSE_URL)" >> $(UNIVERSE_URL_PATH)
 	else
 		UNIVERSE_URL_PATH=$(ROOT_DIR)/stub-universe-url.tmp \
 		TEMPLATE_HTTPS_PROTOCOL='https://' \
@@ -126,19 +111,10 @@ stub-universe-url: docker-dist cli
 			-a $(ROOT_DIR)/cli/dcos-spark/dcos-spark-linux \
 			-a $(ROOT_DIR)/cli/dcos-spark/dcos-spark.exe \
 			aws
-		cat $(ROOT_DIR)/stub-universe-url.tmp > $(UNIVERSE_URL_PATH)
-	fi
-	if [ -n "$(HISTORY_STUB_UNIVERSE_URL)" ]; then
-		echo "Using provided History stub universe: $(HISTORY_STUB_UNIVERSE_URL)"
-		echo "$(HISTORY_STUB_UNIVERSE_URL)" >> $(UNIVERSE_URL_PATH)
-	else
-		UNIVERSE_URL_PATH=$(ROOT_DIR)/stub-universe-url.tmp \
-		DOCKER_IMAGE=`cat docker-dist` \
-		TEMPLATE_DEFAULT_DOCKER_IMAGE=${DOCKER_IMAGE} \
-		TEMPLATE_HTTPS_PROTOCOL='https://' \
-		        $(ROOT_DIR)/tools/build_package.sh spark-history $(ROOT_DIR)/history aws
 		cat $(ROOT_DIR)/stub-universe-url.tmp >> $(UNIVERSE_URL_PATH)
+		echo "STUB_UNIVERSE_URL=`cat $(ROOT_DIR)/stub-universe-url.tmp`"
 	fi
+	rm -f $(ROOT_DIR)/stub-universe-url.tmp
 
 
 DCOS_SPARK_TEST_JAR_PATH ?= $(ROOT_DIR)/dcos-spark-scala-tests-assembly-0.1-SNAPSHOT.jar
@@ -146,39 +122,6 @@ $(DCOS_SPARK_TEST_JAR_PATH):
 	cd tests/jobs/scala
 	sbt assembly
 	cp $(ROOT_DIR)/tests/jobs/scala/target/scala-2.11/dcos-spark-scala-tests-assembly-0.1-SNAPSHOT.jar $(DCOS_SPARK_TEST_JAR_PATH)
-
-CF_TEMPLATE_URL ?= https://s3.amazonaws.com/downloads.mesosphere.io/dcos-enterprise/testing/master/cloudformation/ee.single-master.cloudformation.json
-config.yaml:
-	$(eval export DCOS_LAUNCH_CONFIG_BODY)
-	echo "$$DCOS_LAUNCH_CONFIG_BODY" > config.yaml
-
-cluster-url: config.yaml
-	if [ -n "$(CLUSTER_URL)" ]; then
-		echo "Using provided CLUSTER_URL: $(CLUSTER_URL)"
-	else
-		echo "Launching new cluster (no CLUSTER_URL specified)"
-		dcos-launch create
-		dcos-launch wait
-		export CLUSTER_URL=https://`dcos-launch describe | jq -r .masters[0].public_ip`
-		echo "Launched cluster: $(CLUSTER_URL)"
-
-		if [ "`cat cluster_info.json | jq .key_helper`" == "true" ]; then
-			ssh_key_path=$(HOME)/.ssh/ccm.pem
-			echo "Extracting cluster SSH key to $${ssh_key_path}"
-			mkdir -p `dirname $${ssh_key_path}`
-			cat cluster_info.json | jq -r .ssh_private_key > $${ssh_key_path}
-			chmod 600 $${ssh_key_path}
-		else
-			echo "WARNING: No SSH key found in cluster_info.json"
-		fi
-	fi
-
-clean-cluster:
-	if [ -n "$(CLUSTER_URL)" ]; then
-		echo "Not deleting cluster provided by external CLUSTER_URL: $(CLUSTER_URL)"
-	else
-		dcos-launch delete || echo "Error deleting cluster"
-	fi
 
 mesos-spark-integration-tests:
 	git clone https://github.com/typesafehub/mesos-spark-integration-tests $(ROOT_DIR)/mesos-spark-integration-tests
@@ -190,6 +133,11 @@ $(MESOS_SPARK_TEST_JAR_PATH): mesos-spark-integration-tests
 	cd ..
 	sbt clean compile test
 	cp test-runner/target/scala-2.11/mesos-spark-integration-tests-assembly-0.1.0.jar $(MESOS_SPARK_TEST_JAR_PATH)
+
+CF_TEMPLATE_URL ?= https://s3.amazonaws.com/downloads.mesosphere.io/dcos-enterprise/testing/master/cloudformation/ee.single-master.cloudformation.json
+write-config-yaml:
+	$(eval export DCOS_LAUNCH_CONFIG_BODY)
+	echo "$$DCOS_LAUNCH_CONFIG_BODY" > $(ROOT_DIR)/config.yaml
 
 aws-credentials:
 	creds_file=$(HOME)/.aws/credentials
@@ -211,14 +159,22 @@ aws-credentials:
 		fi
 	fi
 
-test: $(DCOS_SPARK_TEST_JAR_PATH) $(MESOS_SPARK_TEST_JAR_PATH) aws-credentials stub-universe-url cluster-url
+test: $(DCOS_SPARK_TEST_JAR_PATH) $(MESOS_SPARK_TEST_JAR_PATH) write-config-yaml aws-credentials stub-universe-url
+	if [ -z "$(CLUSTER_URL)" ]; then
+		rm -f $(ROOT_DIR)/cluster_info.json # TODO remove this when launch_cluster.sh in docker image is updated
+	fi
 	STUB_UNIVERSE_URL=`cat $(UNIVERSE_URL_PATH)` \
-	CUSTOM_DOCKER_ARGS="-e DCOS_SPARK_TEST_JAR_PATH=/build/`basename ${DCOS_SPARK_TEST_JAR_PATH}` -e MESOS_SPARK_TEST_JAR_PATH=/build/`basename ${MESOS_SPARK_TEST_JAR_PATH}` -e S3_PREFIX=$(S3_PREFIX) -e S3_BUCKET=$(S3_BUCKET)" \
+	CUSTOM_DOCKER_ARGS="\
+-e DCOS_SPARK_TEST_JAR_PATH=/build/`basename ${DCOS_SPARK_TEST_JAR_PATH}` \
+-e MESOS_SPARK_TEST_JAR_PATH=/build/`basename ${MESOS_SPARK_TEST_JAR_PATH}` \
+-e S3_PREFIX=$(S3_PREFIX) \
+-e S3_BUCKET=$(S3_BUCKET) \
+-e AWS_REGION=$(AWS_REGION)" \
 	S3_BUCKET=$(S3_BUCKET) \
 		$(ROOT_DIR)/test.sh
 
-clean: clean-cluster
-	for f in  "$(MESOS_SPARK_TEST_JAR_PATH)" "$(DCOS_SPARK_TEST_JAR_PATH)" "$(UNIVERSE_URL_PATH)" "$(HISTORY_URL_PATH)" "docker-build" "docker-dist" ; do
+clean: clean-dist
+	for f in  "$(MESOS_SPARK_TEST_JAR_PATH)" "$(DCOS_SPARK_TEST_JAR_PATH)" "$(UNIVERSE_URL_PATH)" "docker-build"; do
 		[ ! -e $$f ] || rm $$f
 	done
 
@@ -231,7 +187,6 @@ endef
 define does_profile_exist
 `cd "$(SPARK_DIR)" && ./build/mvn help:all-profiles | grep $(1)`
 endef
-
 
 define DCOS_LAUNCH_CONFIG_BODY
 ---
@@ -247,5 +202,4 @@ template_parameters:
 ssh_user: core
 endef
 
-
-.PHONY: clean clean-dist cluster-url clean-cluster cli stub-universe-url manifest-dist dev-dist prod-dist docker-login test
+.PHONY: clean clean-dist cluster-url cli stub-universe-url manifest-dist dev-dist prod-dist docker-login test

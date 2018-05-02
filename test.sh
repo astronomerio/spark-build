@@ -222,17 +222,6 @@ fi
 WORK_DIR="/build"
 
 if [ x"$interactive" == x"false" ]; then
-    if [ -z "$CLUSTER_URL" ]; then
-        echo "Cluster not found. Create and configure one then set \$CLUSTER_URL."
-        exit 1
-    else
-        if [[ x"$security" == x"strict" ]] && [[ $CLUSTER_URL != https* ]]; then
-            echo $CLUSTER_URL
-            echo "CLUSTER_URL must be https in strict mode"
-            exit 1
-        fi
-    fi
-
     framework="$frameworks"
     if [ "$framework" = "all" -a -n "$STUB_UNIVERSE_URL" ]; then
         echo "Cannot set \$STUB_UNIVERSE_URL when building all frameworks"
@@ -241,7 +230,7 @@ if [ x"$interactive" == x"false" ]; then
     framework_args="-e FRAMEWORK=$framework"
     DOCKER_COMMAND="bash /build-tools/test_runner.sh $WORK_DIR"
 else
-# interactive mode
+    # interactive mode
     # framework_args="-u $(id -u):$(id -g) -e DCOS_DIR=/build/.dcos-in-docker"
     framework_args=""
     framework="NOT_SPECIFIED"
