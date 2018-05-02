@@ -59,7 +59,9 @@ def kafka_enabled():
     return os.environ.get("KAFKA_ENABLED") != "false"
 
 
-def require_spark(service_name=SPARK_SERVICE_NAME, additional_options={}):
+def require_spark(service_name=SPARK_SERVICE_NAME, additional_options={}, zk='spark_mesos_dispatcher'):
+    teardown_spark(service_name, zk)
+
     sdk_install.install(
         SPARK_PACKAGE_NAME,
         service_name,
@@ -132,7 +134,10 @@ def submit_job(
         SPARK_PACKAGE_NAME,
         service_name,
         'run {} --submit-args="{}"'.format(verbose_flag, submit_args))
-    return re.search(r"Submission id: (\S+)", stdout).group(1)
+    result = re.search(r"Submission id: (\S+)", stdout)
+    if not result:
+        raise Exception("Unable to find submission ID in stdout:\n{}".format(stdout))
+    return result.group(1)
 
 
 def check_job_output(task_id, expected_output):
