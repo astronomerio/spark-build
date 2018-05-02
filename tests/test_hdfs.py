@@ -30,26 +30,27 @@ KEYTAB_SECRET_PATH = os.getenv("KEYTAB_SECRET_PATH", "__dcos_base64___keytab")
 
 HDFS_PACKAGE_NAME = 'hdfs'
 HDFS_SERVICE_NAME = 'hdfs'
+HISTORY_SERVICE_NAME = os.getenv("HISTORY_SERVICE_NAME", "spark-history")
 
 HDFS_DATA_DIR = '/users/{}'.format(ALICE_USER)
 HDFS_HISTORY_DIR = '/history'
 
-HDFS_KRB5_CONF_ORIG = b'''[libdefaults]
-default_realm = LOCAL
+HDFS_KRB5_CONF_ORIG = '''[libdefaults]
+default_realm = %(realm)s
 dns_lookup_realm = true
 dns_lookup_kdc = true
 udp_preference_limit = 1
 
 [realms]
-  LOCAL = {
+  %(realm)s = {
     kdc = kdc.marathon.mesos:2500
   }
 
 [domain_realm]
-  .hdfs.dcos = LOCAL
-  hdfs.dcos = LOCAL
-'''
-HDFS_KRB5_CONF = base64.b64encode(HDFS_KRB5_CONF_ORIG).decode('utf8')
+  .hdfs.dcos = %(realm)s
+  hdfs.dcos = %(realm)s
+''' % {"realm": sdk_auth.REALM} # avoid format() due to problems with "{" in string
+HDFS_KRB5_CONF = base64.b64encode(HDFS_KRB5_CONF_ORIG.encode('utf8')).decode('utf8')
 
 KERBEROS_ARGS = ["--kerberos-principal", ALICE_PRINCIPAL,
                  "--keytab-secret-path", "/{}".format(KEYTAB_SECRET_PATH),
@@ -205,7 +206,25 @@ def setup_history_server(hdfs_with_kerberos, setup_hdfs_client, configure_univer
 @pytest.fixture(scope='module', autouse=True)
 def setup_spark(hdfs_with_kerberos, setup_history_server, configure_security_spark, configure_universe):
     try:
-        utils.require_spark(use_hdfs=True, use_history=True)
+        additional_options = {
+            "hdfs": {
+                "config-url": "http://api.{}.marathon.l4lb.thisdcos.directory/v1/endpoints".format(HDFS_SERVICE_NAME)
+            },
+            "security": {
+                "kerberos": {
+                    "enabled": True,
+                    "realm": sdk_auth.REALM,
+                    "kdc": {
+                        "hostname": hdfs_with_kerberos.get_host(),
+                        "port": int(hdfs_with_kerberos.get_port())
+                    }
+                }
+            },
+            "service": {
+                "spark-history-server-url": shakedown.dcos_url_path("/service/{}".format(HISTORY_SERVICE_NAME))
+            }
+        }
+        utils.require_spark(additional_options=additional_options)
         yield
     finally:
         utils.teardown_spark()

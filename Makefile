@@ -123,6 +123,9 @@ $(DCOS_SPARK_TEST_JAR_PATH):
 	sbt assembly
 	cp $(ROOT_DIR)/tests/jobs/scala/target/scala-2.11/dcos-spark-scala-tests-assembly-0.1-SNAPSHOT.jar $(DCOS_SPARK_TEST_JAR_PATH)
 
+clean-cluster:
+	dcos-launch delete || echo "Error deleting cluster"
+
 mesos-spark-integration-tests:
 	git clone https://github.com/typesafehub/mesos-spark-integration-tests $(ROOT_DIR)/mesos-spark-integration-tests
 
@@ -139,27 +142,7 @@ write-config-yaml:
 	$(eval export DCOS_LAUNCH_CONFIG_BODY)
 	echo "$$DCOS_LAUNCH_CONFIG_BODY" > $(ROOT_DIR)/config.yaml
 
-aws-credentials:
-	creds_file=$(HOME)/.aws/credentials
-	if [ -f "$${creds_file}" ]; then # maws should create this
-		echo "Using credentials in $${creds_file}"
-	else
-		if [ -n "$${AWS_DEV_ACCESS_KEY_ID}" -a -n "$${AWS_DEV_SECRET_ACCESS_KEY}}" ]; then # CI environment (direct invocation)
-			export AWS_ACCESS_KEY_ID=$${AWS_DEV_ACCESS_KEY_ID} AWS_SECRET_ACCESS_KEY=$${AWS_DEV_SECRET_ACCESS_KEY}
-		fi
-		if [ -n "$${AWS_ACCESS_KEY_ID}" -a -n "$${AWS_SECRET_ACCESS_KEY}}" ]; then # CI environment (via docker run)
-			echo "Writing regular env credentials to $${creds_file}"
-			mkdir -p `dirname $${creds_file}`
-			echo "[default]" > $${creds_file}
-			echo "aws_access_key_id = $${AWS_ACCESS_KEY_ID}" >> $${creds_file}
-			echo "aws_secret_access_key = $${AWS_SECRET_ACCESS_KEY}" >> $${creds_file}
-		else
-			echo "Missing credentials file $${creds_file} and no AWS credentials in env"
-			exit 1
-		fi
-	fi
-
-test: $(DCOS_SPARK_TEST_JAR_PATH) $(MESOS_SPARK_TEST_JAR_PATH) write-config-yaml aws-credentials stub-universe-url
+test: $(DCOS_SPARK_TEST_JAR_PATH) $(MESOS_SPARK_TEST_JAR_PATH) write-config-yaml stub-universe-url
 	if [ -z "$(CLUSTER_URL)" ]; then
 		rm -f $(ROOT_DIR)/cluster_info.json # TODO remove this when launch_cluster.sh in docker image is updated
 	fi

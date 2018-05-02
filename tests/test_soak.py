@@ -102,7 +102,22 @@ TERASORT_DELETE_JOB_KERBEROS = {
 
 def setup_module(module):
     if not shakedown.package_installed('spark', SOAK_SPARK_SERVICE_NAME):
-        utils.require_spark(service_name=SOAK_SPARK_SERVICE_NAME, use_hdfs=True)
+        additional_options = {
+            "hdfs": {
+                "config-url": "http://api.hdfs.marathon.l4lb.thisdcos.directory/v1/endpoints"
+            },
+            "security": {
+                "kerberos": {
+                    "enabled": True,
+                    "realm": "LOCAL",
+                    "kdc": {
+                        "hostname": "kdc.marathon.autoip.dcos.thisdcos.directory",
+                        "port": 2500
+                    }
+                }
+            }
+        }
+        utils.require_spark(service_name=SOAK_SPARK_SERVICE_NAME, additional_options=additional_options)
 
 
 @pytest.mark.soak

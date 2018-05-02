@@ -49,7 +49,6 @@ LOGGER = logging.getLogger(__name__)
 SPARK_PACKAGE_NAME = os.getenv("SPARK_PACKAGE_NAME", "spark")
 SPARK_EXAMPLES = "http://downloads.mesosphere.com/spark/assets/spark-examples_2.11-2.0.1.jar"
 HISTORY_PACKAGE_NAME = os.getenv("HISTORY_PACKAGE_NAME", "spark-history")
-HISTORY_SERVICE_NAME = os.getenv("HISTORY_SERVICE_NAME", "spark-history")
 
 
 def hdfs_enabled():
@@ -60,12 +59,12 @@ def kafka_enabled():
     return os.environ.get("KAFKA_ENABLED") != "false"
 
 
-def require_spark(service_name=SPARK_SERVICE_NAME, use_hdfs=False, use_history=False):
+def require_spark(service_name=SPARK_SERVICE_NAME, additional_options={}):
     sdk_install.install(
         SPARK_PACKAGE_NAME,
         service_name,
         0,
-        additional_options=_get_spark_options(service_name, use_hdfs, use_history),
+        additional_options=_get_spark_options(service_name, additional_options),
         wait_for_deployment=False, # no deploy plan
         insert_strict_options=False) # lacks principal + secret_name options
 
@@ -87,36 +86,22 @@ def teardown_spark(service_name=SPARK_SERVICE_NAME, zk='spark_mesos_dispatcher')
         sdk_install.retried_run_janitor(service_name, 'spark-role-unused', 'spark-principal-ignored', zk)
 
 
-def _get_spark_options(service_name, use_hdfs, use_history):
-    options = {}
-    options["service"] = {
-        "user": "nobody",
-        "name": service_name
+def _get_spark_options(service_name, additional_options):
+    options = {
+        "service": {
+            "user": "nobody",
+            "name": service_name
+        }
     }
 
-    if use_hdfs:
-        options["hdfs"] = {
-            "config-url": "http://api.hdfs.marathon.l4lb.thisdcos.directory/v1/endpoints"
-        }
-        options["security"] = {
-            "kerberos": {
-                "enabled": True,
-                "realm": "LOCAL",
-                "kdc": {
-                    "hostname": "kdc.marathon.autoip.dcos.thisdcos.directory",
-                    "port": 2500
-                }
-            }
-        }
-
-    if use_history:
-        options["service"]["spark-history-server-url"] = shakedown.dcos_url_path("/service/{}".format(HISTORY_SERVICE_NAME))
-
     if sdk_utils.is_strict_mode():
+        # At the moment, we do this by hand because Spark doesn't quite line up with other services
+        # with these options, and sdk_install assumes that we're following those conventions
+        # Specifically, Spark's config.json lacks: service.principal, service.secret_name
         options["service"]["service_account"] = SPARK_SERVICE_ACCOUNT
         options["service"]["service_account_secret"] = SPARK_SERVICE_ACCOUNT_SECRET
 
-    return options
+    return sdk_install.merge_dictionaries(options, additional_options)
 
 
 def run_tests(app_url, app_args, expected_output, service_name=SPARK_SERVICE_NAME, args=[]):
