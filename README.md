@@ -53,15 +53,19 @@ a CLI in order to complete the package.
 ```bash
 make stub-universe-url
 ```
-This will build and upload a "stub" universe (i.e. singleton repo) containing a
-Spark package.
+This will build and upload a "stub" universe (i.e. singleton repo) containing a Spark package.
 
 ## Test
 
 ```bash
+make test-jars
+```
+This command will build the payload jars used in the integration tests. Running this command separately is optional, only needed when it's desirable to perform all build operations separately from the test run itself.
+
+```bash
 make test
 ```
-This command will run a complete build and then run the integration test suite.
+This command will run a complete build (if needed) and then run the integration test suite.
 
 It supports the following optional environment variables:
 ```bash

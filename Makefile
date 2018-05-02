@@ -53,7 +53,7 @@ clean-dist:
 	rm -rf $(DIST_DIR)
 
 docker-login:
-	docker login --email="$(DOCKER_EMAIL)" --username="$(DOCKER_USERNAME)" --password="$(DOCKER_PASSWORD)"
+	docker login --username="$(DOCKER_USERNAME)" --password="$(DOCKER_PASSWORD)"
 
 DOCKER_DIST_IMAGE ?= mesosphere/spark-dev:$(GIT_COMMIT)
 docker-dist: $(DIST_DIR)
@@ -80,11 +80,9 @@ docker-dist: $(DIST_DIR)
 	docker push $(DOCKER_DIST_IMAGE)
 	echo "$(DOCKER_DIST_IMAGE)" > $@
 
-cli:
-	$(ROOT_DIR)/cli/dcos-spark/build.sh
 
 UNIVERSE_URL_PATH ?= $(ROOT_DIR)/spark-universe-url
-stub-universe-url: docker-dist cli
+stub-universe-url: docker-dist
 	if [ -n "$(STUB_UNIVERSE_URL)" ]; then
 		echo "Using provided stub universe(s): $(STUB_UNIVERSE_URL)"
 		echo "$(STUB_UNIVERSE_URL)" > $(UNIVERSE_URL_PATH)
@@ -94,6 +92,8 @@ stub-universe-url: docker-dist cli
 		TEMPLATE_HTTPS_PROTOCOL='https://' \
 		        $(ROOT_DIR)/tools/build_package.sh spark-history $(ROOT_DIR)/history aws
 		cat $(ROOT_DIR)/stub-universe-url.tmp > $(UNIVERSE_URL_PATH)
+
+		$(ROOT_DIR)/cli/dcos-spark/build.sh
 
 		UNIVERSE_URL_PATH=$(ROOT_DIR)/stub-universe-url.tmp \
 		TEMPLATE_DOCKER_IMAGE=`cat docker-dist` \
@@ -110,15 +110,11 @@ stub-universe-url: docker-dist cli
 		rm -f $(ROOT_DIR)/stub-universe-url.tmp
 	fi
 
-
 DCOS_SPARK_TEST_JAR_PATH ?= $(ROOT_DIR)/dcos-spark-scala-tests-assembly-0.1-SNAPSHOT.jar
 $(DCOS_SPARK_TEST_JAR_PATH):
 	cd tests/jobs/scala
 	sbt assembly
-	cp $(ROOT_DIR)/tests/jobs/scala/target/scala-2.11/dcos-spark-scala-tests-assembly-0.1-SNAPSHOT.jar $(DCOS_SPARK_TEST_JAR_PATH)
-
-clean-cluster:
-	dcos-launch delete || echo "Error deleting cluster"
+	cp -v $(ROOT_DIR)/tests/jobs/scala/target/scala-2.11/dcos-spark-scala-tests-assembly-0.1-SNAPSHOT.jar $@
 
 mesos-spark-integration-tests:
 	git clone https://github.com/typesafehub/mesos-spark-integration-tests $(ROOT_DIR)/mesos-spark-integration-tests
@@ -129,14 +125,21 @@ $(MESOS_SPARK_TEST_JAR_PATH): mesos-spark-integration-tests
 	sbt assembly
 	cd ..
 	sbt clean compile test
-	cp test-runner/target/scala-2.11/mesos-spark-integration-tests-assembly-0.1.0.jar $(MESOS_SPARK_TEST_JAR_PATH)
+	cp -v test-runner/target/scala-2.11/mesos-spark-integration-tests-assembly-0.1.0.jar $@
+
+# Special directive to allow building the test jars separately from running the tests.
+test-jars: $(DCOS_SPARK_TEST_JAR_PATH) $(MESOS_SPARK_TEST_JAR_PATH)
+
 
 CF_TEMPLATE_URL ?= https://s3.amazonaws.com/downloads.mesosphere.io/dcos-enterprise/testing/master/cloudformation/ee.single-master.cloudformation.json
-write-config-yaml:
+config.yaml:
 	$(eval export DCOS_LAUNCH_CONFIG_BODY)
-	echo "$$DCOS_LAUNCH_CONFIG_BODY" > $(ROOT_DIR)/config.yaml
+	echo "$$DCOS_LAUNCH_CONFIG_BODY" > $@
 
-test: $(DCOS_SPARK_TEST_JAR_PATH) $(MESOS_SPARK_TEST_JAR_PATH) write-config-yaml stub-universe-url
+
+# We're careful to only build if they're missing.
+# This allows CI to do builds against one image (spark-build), and then tests against another image (dcos-commons)
+test: test-jars stub-universe-url config.yaml
 	if [ -z "$(CLUSTER_URL)" ]; then
 		rm -f $(ROOT_DIR)/cluster_info.json # TODO remove this when launch_cluster.sh in docker image is updated
 	fi
@@ -148,13 +151,16 @@ test: $(DCOS_SPARK_TEST_JAR_PATH) $(MESOS_SPARK_TEST_JAR_PATH) write-config-yaml
 -e S3_BUCKET=$(S3_BUCKET) \
 -e AWS_REGION=$(AWS_REGION)" \
 	S3_BUCKET=$(S3_BUCKET) \
-		$(ROOT_DIR)/test.sh
+		$(ROOT_DIR)/test.sh $(TEST_SH_ARGS)
+
+
+clean-cluster:
+	dcos-launch delete || echo "Error deleting cluster"
 
 clean: clean-dist
 	for f in  "$(MESOS_SPARK_TEST_JAR_PATH)" "$(DCOS_SPARK_TEST_JAR_PATH)" "$(UNIVERSE_URL_PATH)" "docker-build"; do
 		[ ! -e $$f ] || rm $$f
 	done
-
 
 
 define spark_dist
