@@ -13,7 +13,7 @@ JAR_URI = "https://s3-us-west-2.amazonaws.com/infinity-artifacts/soak/spark/dcos
 
 def run_pipeline(stop_count, spark_app_name):
     broker_dns = _kafka_broker_dns()
-    topic = "top1"
+    topic = "top-{}".format(spark_app_name)
 
     # arguments to the application
     common_args = [
@@ -24,7 +24,7 @@ def run_pipeline(stop_count, spark_app_name):
         "--conf", "spark.mesos.uris=http://norvig.com/big.txt"
     ]
 
-    producer_id = submit_producer(broker_dns, common_args, topic, spark_app_name)
+    submit_producer(broker_dns, common_args, topic, spark_app_name)
 
     submit_consumers(broker_dns, common_args, topic, spark_app_name, str(stop_count))
 
@@ -54,7 +54,7 @@ def submit_consumers(broker_dns, args, topic, spark_app_name, stop_count):
     consumer_config = ["--conf", "spark.cores.max=4",
                        "--class", "KafkaConsumer"] + args
 
-    for i in range(0, 5):
+    for i in range(0, 10):
         utils.submit_job(app_url=JAR_URI,
                          app_args=consumer_args,
                          app_name=spark_app_name,
