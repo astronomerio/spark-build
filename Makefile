@@ -85,25 +85,19 @@ cli:
 
 UNIVERSE_URL_PATH ?= $(ROOT_DIR)/spark-universe-url
 stub-universe-url: docker-dist cli
-	if [ -n "$(HISTORY_STUB_UNIVERSE_URL)" ]; then
-		echo "Using provided History stub universe: $(HISTORY_STUB_UNIVERSE_URL)"
-		echo "$(HISTORY_STUB_UNIVERSE_URL)" > $(UNIVERSE_URL_PATH)
+	if [ -n "$(STUB_UNIVERSE_URL)" ]; then
+		echo "Using provided stub universe(s): $(STUB_UNIVERSE_URL)"
+		echo "$(STUB_UNIVERSE_URL)" > $(UNIVERSE_URL_PATH)
 	else
 		UNIVERSE_URL_PATH=$(ROOT_DIR)/stub-universe-url.tmp \
-		DOCKER_IMAGE=`cat docker-dist` \
-		TEMPLATE_DEFAULT_DOCKER_IMAGE=${DOCKER_IMAGE} \
+		TEMPLATE_DEFAULT_DOCKER_IMAGE=`cat docker-dist` \
 		TEMPLATE_HTTPS_PROTOCOL='https://' \
 		        $(ROOT_DIR)/tools/build_package.sh spark-history $(ROOT_DIR)/history aws
 		cat $(ROOT_DIR)/stub-universe-url.tmp > $(UNIVERSE_URL_PATH)
-		echo "HISTORY_STUB_UNIVERSE_URL=`cat $(ROOT_DIR)/stub-universe-url.tmp`"
-	fi
-	if [ -n "$(STUB_UNIVERSE_URL)" ]; then
-		echo "Using provided Spark stub universe: $(STUB_UNIVERSE_URL)"
-		echo "$(STUB_UNIVERSE_URL)" >> $(UNIVERSE_URL_PATH)
-	else
+
 		UNIVERSE_URL_PATH=$(ROOT_DIR)/stub-universe-url.tmp \
-		TEMPLATE_HTTPS_PROTOCOL='https://' \
 		TEMPLATE_DOCKER_IMAGE=`cat docker-dist` \
+		TEMPLATE_HTTPS_PROTOCOL='https://' \
 			$(ROOT_DIR)/tools/build_package.sh \
 			spark \
 			$(ROOT_DIR) \
@@ -112,9 +106,9 @@ stub-universe-url: docker-dist cli
 			-a $(ROOT_DIR)/cli/dcos-spark/dcos-spark.exe \
 			aws
 		cat $(ROOT_DIR)/stub-universe-url.tmp >> $(UNIVERSE_URL_PATH)
-		echo "STUB_UNIVERSE_URL=`cat $(ROOT_DIR)/stub-universe-url.tmp`"
+
+		rm -f $(ROOT_DIR)/stub-universe-url.tmp
 	fi
-	rm -f $(ROOT_DIR)/stub-universe-url.tmp
 
 
 DCOS_SPARK_TEST_JAR_PATH ?= $(ROOT_DIR)/dcos-spark-scala-tests-assembly-0.1-SNAPSHOT.jar
@@ -185,4 +179,4 @@ template_parameters:
 ssh_user: core
 endef
 
-.PHONY: clean clean-dist cluster-url cli stub-universe-url manifest-dist dev-dist prod-dist docker-login test
+.PHONY: clean clean-dist cli stub-universe-url prod-dist docker-login test
