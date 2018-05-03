@@ -12,7 +12,8 @@ JAR_URI = "https://s3-us-west-2.amazonaws.com/infinity-artifacts/soak/spark/dcos
 PRODUCER_AVG_NUM_WORDS_PER_MIN = 500
 
 
-def run_pipeline(num_consumers, desired_runtime, spark_app_name):
+def run_pipeline(num_consumers, desired_runtime, dispatcher):
+    spark_app_name, driver_role = dispatcher.split(",")
     broker_dns = _kafka_broker_dns()
     topic = "topic-{}".format(spark_app_name)
 
@@ -20,17 +21,20 @@ def run_pipeline(num_consumers, desired_runtime, spark_app_name):
 
     # arguments to the application
     common_args = [
-        "--conf", "spark.scheduler.maxRegisteredResourcesWaitingTime=2400s",
-        "--conf", "spark.scheduler.minRegisteredResourcesRatio=1.0",
+        "--supervise",
         "--conf", "spark.mesos.containerizer=mesos",
-        "--conf", "mesosphere/spark-dev:f5dd540adffd9ab9e3e826e48d22e39ebc296567-1d7926a8b500d0105b80a6bb808a671b047dc963",
-        "--conf", "spark.mesos.uris=http://norvig.com/big.txt"
+        "--conf", "spark.mesos.driver.failoverTimeout=30",
+        "--conf", "spark.mesos.executor.docker.image=mesosphere/spark-dev:f5dd540adffd9ab9e3e826e48d22e39ebc296567-1d7926a8b500d0105b80a6bb808a671b047dc963",
+        "--conf", "spark.mesos.uris=http://norvig.com/big.txt",
+        "--conf", "spark.port.maxRetries=32",
+        "--conf", "spark.scheduler.maxRegisteredResourcesWaitingTime=2400s",
+        "--conf", "spark.scheduler.minRegisteredResourcesRatio=1.0"
     ]
 
-    _submit_producer(broker_dns, common_args, topic, spark_app_name)
+    _submit_producer(broker_dns, common_args, topic, spark_app_name, driver_role)
 
     for i in range(0, num_consumers):
-        _submit_consumers(broker_dns, common_args, topic, spark_app_name, str(num_words_to_read))
+        _submit_consumers(broker_dns, common_args, topic, spark_app_name, driver_role, str(num_words_to_read))
 
 
 def _kafka_broker_dns():
@@ -42,7 +46,7 @@ def _kafka_broker_dns():
     return json.loads(stdout)["dns"][0]
 
 
-def _submit_producer(broker_dns, args, topic, spark_app_name):
+def _submit_producer(broker_dns, args, topic, spark_app_name, driver_role):
     big_file = "file:///mnt/mesos/sandbox/big.txt"
 
     producer_args = " ".join([broker_dns, big_file, topic, KERBEROS_FLAG])
@@ -55,10 +59,11 @@ def _submit_producer(broker_dns, args, topic, spark_app_name):
                      app_args=producer_args,
                      app_name=spark_app_name,
                      args=producer_config,
+                     driver_role=driver_role,
                      verbose=False)
 
 
-def _submit_consumers(broker_dns, args, topic, spark_app_name, num_words):
+def _submit_consumers(broker_dns, args, topic, spark_app_name, driver_role, num_words):
     consumer_args = " ".join([broker_dns, topic, num_words, KERBEROS_FLAG])
 
     consumer_config = ["--conf", "spark.cores.max=4",
@@ -68,6 +73,7 @@ def _submit_consumers(broker_dns, args, topic, spark_app_name, num_words):
                      app_args=consumer_args,
                      app_name=spark_app_name,
                      args=consumer_config,
+                     driver_role=driver_role,
                      verbose=False)
 
 
@@ -96,7 +102,7 @@ if __name__ == "__main__":
     print("Installing kafka CLI...")
     rc, stdout, stderr = sdk_cmd.run_raw_cli("package install {} --yes --cli".format(KAFKA_PACKAGE_NAME))
 
-    for dispatcher_name in dispatchers:
+    for dispatcher in dispatchers:
         run_pipeline(num_consumers=num_consumers,
                      desired_runtime=desired_runtime,
-                     spark_app_name=dispatcher_name)
+                     dispatcher=dispatcher)
