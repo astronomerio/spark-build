@@ -30,6 +30,7 @@ KEYTAB_SECRET_PATH = os.getenv("KEYTAB_SECRET_PATH", "__dcos_base64___keytab")
 
 HDFS_PACKAGE_NAME = 'hdfs'
 HDFS_SERVICE_NAME = 'hdfs'
+HISTORY_PACKAGE_NAME = os.getenv("HISTORY_PACKAGE_NAME", "spark-history")
 HISTORY_SERVICE_NAME = os.getenv("HISTORY_SERVICE_NAME", "spark-history")
 
 HDFS_DATA_DIR = '/users/{}'.format(ALICE_USER)
@@ -173,14 +174,14 @@ def setup_history_server(hdfs_with_kerberos, setup_hdfs_client, configure_univer
         hdfs_cmd("mkdir {}".format(HDFS_HISTORY_DIR))
         hdfs_cmd("chmod 1777 {}".format(HDFS_HISTORY_DIR))
 
-        sdk_install.uninstall(utils.HISTORY_PACKAGE_NAME, utils.HISTORY_SERVICE_NAME)
+        sdk_install.uninstall(HISTORY_PACKAGE_NAME, HISTORY_SERVICE_NAME)
         sdk_install.install(
-            utils.HISTORY_PACKAGE_NAME,
-            utils.HISTORY_SERVICE_NAME,
+            HISTORY_PACKAGE_NAME,
+            HISTORY_SERVICE_NAME,
             0,
             additional_options={
                 "service": {
-                    "name": utils.HISTORY_SERVICE_NAME,
+                    "name": HISTORY_SERVICE_NAME,
                     "user": SPARK_HISTORY_USER,
                     "log-dir": "hdfs://hdfs{}".format(HDFS_HISTORY_DIR),
                     "hdfs-config-url": "http://api.{}.marathon.l4lb.thisdcos.directory/v1/endpoints"
@@ -200,7 +201,7 @@ def setup_history_server(hdfs_with_kerberos, setup_hdfs_client, configure_univer
         yield
 
     finally:
-        sdk_install.uninstall(utils.HISTORY_PACKAGE_NAME, utils.HISTORY_SERVICE_NAME)
+        sdk_install.uninstall(HISTORY_PACKAGE_NAME, HISTORY_SERVICE_NAME)
 
 
 @pytest.fixture(scope='module', autouse=True)
@@ -326,9 +327,9 @@ def test_history_kdc_config(hdfs_with_kerberos):
     history_service_with_kdc_config = "spark-history-with-kdc-config"
     try:
         # This deployment will fail if kerberos is not configured properly.
-        sdk_install.uninstall(utils.HISTORY_PACKAGE_NAME, history_service_with_kdc_config)
+        sdk_install.uninstall(HISTORY_PACKAGE_NAME, history_service_with_kdc_config)
         sdk_install.install(
-            utils.HISTORY_PACKAGE_NAME,
+            HISTORY_PACKAGE_NAME,
             history_service_with_kdc_config,
             0,
             additional_options={
