@@ -23,7 +23,7 @@ def run_pipeline(num_consumers, desired_runtime, spark_app_name):
         "--conf", "spark.scheduler.maxRegisteredResourcesWaitingTime=2400s",
         "--conf", "spark.scheduler.minRegisteredResourcesRatio=1.0",
         "--conf", "spark.mesos.containerizer=mesos",
-        "--conf", "spark.mesos.executor.docker.image=mesosphere/spark-dev:931ca56273af913d103718376e2fbc04be7cbde0",
+        "--conf", "mesosphere/spark-dev:f5dd540adffd9ab9e3e826e48d22e39ebc296567-1d7926a8b500d0105b80a6bb808a671b047dc963",
         "--conf", "spark.mesos.uris=http://norvig.com/big.txt"
     ]
 
