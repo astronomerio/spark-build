@@ -9,7 +9,8 @@ lazy val root = (project in file("."))
       "org.apache.spark" % "spark-streaming-kafka-0-10_2.11" % "2.2.0",
       "org.apache.hadoop" % "hadoop-aws" % "2.6.0",
       "org.apache.kafka" % "kafka_2.11" % "0.8.2.0",
-      "com.github.scopt" %% "scopt" % "3.7.0"
+      "com.github.scopt" %% "scopt" % "3.7.0",
+      "com.datastax.spark" %% "spark-cassandra-connector" % "2.0.7"
     )
   )
 
