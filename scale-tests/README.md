@@ -20,12 +20,14 @@ To run the Kafka-Spark Streaming word count app:
 - Run spark streaming scale test
   ```bash
   Setup: export PYTHONPATH=../spark-testing:../testing:../tests
-  Usage: python streaming_test.py <dispatcher_file> <num_consumers_per_producer> <desired_runtime_in_mins>
+  Usage: python streaming_test.py <dispatcher_file> [options]
   ```
+  To view all options, run `python streaming_test.py -h`
+  
   Example:
   ```bash
   export PYTHONPATH=../spark-testing:../testing:../tests
-  python streaming_test.py dispatchers.out 10 10
+  python streaming_test.py dispatchers.out --num-consumers 10 --desired-runtime 10
   ```
   - This will create 1 topic, 1 producer, and 10 consumers per dispatcher. 
   - The `desired_runtime_in_mins` is a rough estimate on when the very last consumer will complete (there is some startup overhead).
