@@ -1,35 +1,75 @@
+#!/usr/bin/env python3
+
+"""streaming_test.py
+
+Usage:
+    streaming_test.py <dispatcher_file> [options]
+
+Arguments:
+    dispatcher_file             file path to dispatchers list
+
+Options:
+    --desired-runtime <n>        desired time for consumers to run (in minutes) [default: 10]
+    --jar <url>                  url path to hosted jar
+    --kafka-package-name <name>  name of Kafka package [default: kafka]
+    --kafka-service-name <name>  name of Kafka service [default: kafka]
+    --kerberos-flag <bool>       is Kerberos enabled? [default: false]
+    --num-consumers <n>          number of consumers to create for each producer [default: 1]
+"""
+
+
 import logging
 import json
-import sys
 
 import sdk_cmd
-import spark_utils as utils
+import spark_utils
 
-KAFKA_PACKAGE_NAME = "kafka"
-KAFKA_SERVICE_NAME = "kafka"
-KERBEROS_FLAG = "false"
-JAR_URI = "https://s3-us-west-2.amazonaws.com/infinity-artifacts/soak/spark/dcos-spark-scala-tests-assembly-0.2-SNAPSHOT.jar"
-PRODUCER_NUM_WORDS_PER_MIN = 480
+from docopt import docopt
 
 log = logging.getLogger(__name__)
+PRODUCER_NUM_WORDS_PER_MIN = 480
 
 
-def main(dispatchers, num_consumers, desired_runtime, kerberos_flag):
-    for dispatcher in dispatchers:
-        run_pipeline(num_consumers=num_consumers,
-                     desired_runtime=desired_runtime,
-                     dispatcher=dispatcher)
+def main(dispatchers, jar_url, kafka_pkg_name, kafka_svc_name, num_consumers, desired_runtime, kerberos_flag):
 
+    def _kafka_broker_dns():
+        cmd = "{package_name} --name={service_name} endpoints broker".format(
+            package_name=kafka_pkg_name,
+            service_name=kafka_svc_name)
+        rt, stdout, _ = sdk_cmd.run_raw_cli(cmd)
+        assert rt == 0, "Failed to get broker endpoints"
+        return json.loads(stdout)["dns"][0]
 
-def run_pipeline(num_consumers, desired_runtime, dispatcher):
-    spark_app_name, driver_role = dispatcher.split(",")
-    broker_dns = _kafka_broker_dns()
-    topic = "topic-{}".format(spark_app_name)
+    def _submit_producer(broker_dns, common_conf, topic, spark_app_name, driver_role):
+        big_file = "file:///mnt/mesos/sandbox/big.txt"
 
-    num_words_to_read = int(desired_runtime * PRODUCER_NUM_WORDS_PER_MIN)
+        producer_args = " ".join([broker_dns, big_file, topic, kerberos_flag])
 
-    # arguments to the application
-    common_args = [
+        producer_config = ["--conf", "spark.cores.max=2",
+                           "--conf", "spark.executor.cores=2",
+                           "--class", "KafkaFeeder"] + common_conf
+
+        spark_utils.submit_job(app_url=jar_url,
+                               app_args=producer_args,
+                               app_name=spark_app_name,
+                               args=producer_config,
+                               driver_role=driver_role,
+                               verbose=False)
+
+    def _submit_consumer(broker_dns, common_conf, topic, spark_app_name, driver_role, num_words):
+        consumer_args = " ".join([broker_dns, topic, num_words, kerberos_flag])
+
+        consumer_config = ["--conf", "spark.cores.max=4",
+                           "--class", "KafkaConsumer"] + common_conf
+
+        spark_utils.submit_job(app_url=jar_url,
+                               app_args=consumer_args,
+                               app_name=spark_app_name,
+                               args=consumer_config,
+                               driver_role=driver_role,
+                               verbose=False)
+
+    common_conf = [
         "--supervise",
         "--conf", "spark.mesos.containerizer=mesos",
         "--conf", "spark.mesos.driver.failoverTimeout=30",
@@ -40,75 +80,36 @@ def run_pipeline(num_consumers, desired_runtime, dispatcher):
         "--conf", "spark.scheduler.minRegisteredResourcesRatio=1.0"
     ]
 
-    _submit_producer(broker_dns, common_args, topic, spark_app_name, driver_role)
+    broker_dns = _kafka_broker_dns()
+    num_words_to_read = int(desired_runtime * PRODUCER_NUM_WORDS_PER_MIN)
 
-    for _ in range(0, num_consumers):
-        _submit_consumer(broker_dns, common_args, topic, spark_app_name, driver_role, str(num_words_to_read))
+    for dispatcher in dispatchers:
+        spark_app_name, driver_role = dispatcher.split(",")
+        topic = "topic-{}".format(spark_app_name)
 
+        _submit_producer(broker_dns, common_conf, topic, spark_app_name, driver_role)
 
-def _kafka_broker_dns():
-    cmd = "{package_name} --name={service_name} endpoints broker".format(
-        package_name=KAFKA_PACKAGE_NAME,
-        service_name=KAFKA_SERVICE_NAME)
-    rt, stdout, _ = sdk_cmd.run_raw_cli(cmd)
-    assert rt == 0, "Failed to get broker endpoints"
-    return json.loads(stdout)["dns"][0]
-
-
-def _submit_producer(broker_dns, args, topic, spark_app_name, driver_role):
-    big_file = "file:///mnt/mesos/sandbox/big.txt"
-
-    producer_args = " ".join([broker_dns, big_file, topic, KERBEROS_FLAG])
-
-    producer_config = ["--conf", "spark.cores.max=2",
-                       "--conf", "spark.executor.cores=2",
-                       "--class", "KafkaFeeder"] + args
-
-    utils.submit_job(app_url=JAR_URI,
-                     app_args=producer_args,
-                     app_name=spark_app_name,
-                     args=producer_config,
-                     driver_role=driver_role,
-                     verbose=False)
-
-
-def _submit_consumer(broker_dns, args, topic, spark_app_name, driver_role, num_words):
-    consumer_args = " ".join([broker_dns, topic, num_words, KERBEROS_FLAG])
-
-    consumer_config = ["--conf", "spark.cores.max=4",
-                       "--class", "KafkaConsumer"] + args
-
-    utils.submit_job(app_url=JAR_URI,
-                     app_args=consumer_args,
-                     app_name=spark_app_name,
-                     args=consumer_config,
-                     driver_role=driver_role,
-                     verbose=False)
+        for _ in range(0, num_consumers):
+            _submit_consumer(broker_dns, common_conf, topic, spark_app_name, driver_role, str(num_words_to_read))
 
 
 if __name__ == "__main__":
-    usage = """
-        Setup: export PYTHONPATH=../spark-testing:../testing:../tests
-        Usage: python streaming_test.py <dispatcher_file> <num_consumers_per_producer> <desired_runtime_in_mins> [kerberos_flag]
-    """
+    args = docopt(__doc__)
 
-    if len(sys.argv) < 4:
-        print(usage)
-        sys.exit(2)
-
-    dispatchers_file = sys.argv[1]
-    log.info("dispatchers_file: {}".format(dispatchers_file))
-    with open(dispatchers_file) as f:
+    with open(args["<dispatcher_file>"]) as f:
         dispatchers = f.read().splitlines()
     log.info("dispatchers: {}".format(dispatchers))
 
-    num_consumers = int(sys.argv[2])
-    log.info("num_consumers_per_producer: {}".format(num_consumers))
-
-    desired_runtime = int(sys.argv[3])
-    log.info("desired_runtime_in_mins: {}".format(desired_runtime))
-
     log.info("Installing kafka CLI...")
-    sdk_cmd.run_raw_cli("package install {} --yes --cli".format(KAFKA_PACKAGE_NAME))
+    kafka_pkg_name = args["--kafka-package-name"]
+    sdk_cmd.run_raw_cli("package install {} --yes --cli".format(kafka_pkg_name))
 
-    main(dispatchers, num_consumers, desired_runtime, kerberos_flag="false")
+    jar_url = args["--jar"] or "https://s3-us-west-2.amazonaws.com/infinity-artifacts/soak/spark/dcos-spark-scala-tests-assembly-0.2-SNAPSHOT.jar"
+
+    main(dispatchers=dispatchers,
+         jar_url=jar_url,
+         kafka_pkg_name=kafka_pkg_name,
+         kafka_svc_name=args["--kafka-service-name"],
+         num_consumers=int(args["--num-consumers"]),
+         desired_runtime=int(args["--desired-runtime"]),
+         kerberos_flag=args["--kerberos-flag"])
