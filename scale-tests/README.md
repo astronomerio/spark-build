@@ -1,6 +1,7 @@
 # Spark Scale Tests
 
 ## Batch
+[To be filled in]
 
 ## Streaming
 To run the Kafka-Spark Streaming word count app:
@@ -10,7 +11,7 @@ To run the Kafka-Spark Streaming word count app:
   ```
 - Deploy spark dispatchers
   ```bash
-  Usage: deploy-dispatchers.py [num_dispatchers] [service_name_base] [output_file] (options_json_file)
+  Usage: deploy-dispatchers.py [options] [num_dispatchers] <num_dispatchers> <service_name_base> <output_file>
   ```
   Example:
   ```bash
@@ -19,7 +20,7 @@ To run the Kafka-Spark Streaming word count app:
 - Run spark streaming scale test
   ```bash
   Setup: export PYTHONPATH=../spark-testing:../testing:../tests
-  Usage: python streaming_test.py [dispatcher_file] [num_consumers_per_producer] [desired_runtime_in_mins]
+  Usage: python streaming_test.py <dispatcher_file> <num_consumers_per_producer> <desired_runtime_in_mins>
   ```
   Example:
   ```bash

@@ -1,3 +1,4 @@
+import logging
 import json
 import sys
 
@@ -6,10 +7,18 @@ import spark_utils as utils
 
 KAFKA_PACKAGE_NAME = "kafka"
 KAFKA_SERVICE_NAME = "kafka"
-PRODUCER_SERVICE_NAME = "Spark->Kafka Producer"
 KERBEROS_FLAG = "false"
-JAR_URI = "https://s3-us-west-2.amazonaws.com/infinity-artifacts/soak/spark/dcos-spark-scala-tests-assembly-0.1-SNAPSHOT.jar"
-PRODUCER_AVG_NUM_WORDS_PER_MIN = 500
+JAR_URI = "https://s3-us-west-2.amazonaws.com/infinity-artifacts/soak/spark/dcos-spark-scala-tests-assembly-0.2-SNAPSHOT.jar"
+PRODUCER_NUM_WORDS_PER_MIN = 480
+
+log = logging.getLogger(__name__)
+
+
+def main(dispatchers, num_consumers, desired_runtime, kerberos_flag):
+    for dispatcher in dispatchers:
+        run_pipeline(num_consumers=num_consumers,
+                     desired_runtime=desired_runtime,
+                     dispatcher=dispatcher)
 
 
 def run_pipeline(num_consumers, desired_runtime, dispatcher):
@@ -17,7 +26,7 @@ def run_pipeline(num_consumers, desired_runtime, dispatcher):
     broker_dns = _kafka_broker_dns()
     topic = "topic-{}".format(spark_app_name)
 
-    num_words_to_read = int(desired_runtime * PRODUCER_AVG_NUM_WORDS_PER_MIN / num_consumers)
+    num_words_to_read = int(desired_runtime * PRODUCER_NUM_WORDS_PER_MIN)
 
     # arguments to the application
     common_args = [
@@ -33,8 +42,8 @@ def run_pipeline(num_consumers, desired_runtime, dispatcher):
 
     _submit_producer(broker_dns, common_args, topic, spark_app_name, driver_role)
 
-    for i in range(0, num_consumers):
-        _submit_consumers(broker_dns, common_args, topic, spark_app_name, driver_role, str(num_words_to_read))
+    for _ in range(0, num_consumers):
+        _submit_consumer(broker_dns, common_args, topic, spark_app_name, driver_role, str(num_words_to_read))
 
 
 def _kafka_broker_dns():
@@ -63,7 +72,7 @@ def _submit_producer(broker_dns, args, topic, spark_app_name, driver_role):
                      verbose=False)
 
 
-def _submit_consumers(broker_dns, args, topic, spark_app_name, driver_role, num_words):
+def _submit_consumer(broker_dns, args, topic, spark_app_name, driver_role, num_words):
     consumer_args = " ".join([broker_dns, topic, num_words, KERBEROS_FLAG])
 
     consumer_config = ["--conf", "spark.cores.max=4",
@@ -80,7 +89,7 @@ def _submit_consumers(broker_dns, args, topic, spark_app_name, driver_role, num_
 if __name__ == "__main__":
     usage = """
         Setup: export PYTHONPATH=../spark-testing:../testing:../tests
-        Usage: python streaming_test.py [dispatcher_file] [num_consumers_per_producer] [desired_runtime_in_mins]
+        Usage: python streaming_test.py <dispatcher_file> <num_consumers_per_producer> <desired_runtime_in_mins> [kerberos_flag]
     """
 
     if len(sys.argv) < 4:
@@ -88,21 +97,18 @@ if __name__ == "__main__":
         sys.exit(2)
 
     dispatchers_file = sys.argv[1]
-    print("dispatchers_file: {}".format(dispatchers_file))
+    log.info("dispatchers_file: {}".format(dispatchers_file))
     with open(dispatchers_file) as f:
         dispatchers = f.read().splitlines()
-    print("dispatchers: {}".format(dispatchers))
+    log.info("dispatchers: {}".format(dispatchers))
 
     num_consumers = int(sys.argv[2])
-    print("num_consumers_per_producer: {}".format(num_consumers))
+    log.info("num_consumers_per_producer: {}".format(num_consumers))
 
     desired_runtime = int(sys.argv[3])
-    print("desired_runtime_in_mins: {}".format(desired_runtime))
+    log.info("desired_runtime_in_mins: {}".format(desired_runtime))
 
-    print("Installing kafka CLI...")
-    rc, stdout, stderr = sdk_cmd.run_raw_cli("package install {} --yes --cli".format(KAFKA_PACKAGE_NAME))
+    log.info("Installing kafka CLI...")
+    sdk_cmd.run_raw_cli("package install {} --yes --cli".format(KAFKA_PACKAGE_NAME))
 
-    for dispatcher in dispatchers:
-        run_pipeline(num_consumers=num_consumers,
-                     desired_runtime=desired_runtime,
-                     dispatcher=dispatcher)
+    main(dispatchers, num_consumers, desired_runtime, kerberos_flag="false")
