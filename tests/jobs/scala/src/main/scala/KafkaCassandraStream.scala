@@ -1,4 +1,4 @@
-import java.util.Properties
+import java.util.{Date, Properties}
 import java.util.UUID.randomUUID
 
 import com.datastax.spark.connector.cql.CassandraConnector
@@ -11,9 +11,12 @@ import scopt.OptionParser
 
 import scala.math.max
 import scala.util.Random
-
 import com.datastax.spark.connector._
-
+import org.apache.kafka.clients.consumer.ConsumerConfig
+import org.apache.kafka.common.serialization.StringDeserializer
+import org.apache.spark.internal.Logging
+import org.apache.log4j.{Level, Logger}
+import org.apache.spark.streaming.kafka010.{ConsumerStrategies, KafkaUtils, LocationStrategies}
 
 case class Employee(
                      id: String,
@@ -23,6 +26,21 @@ case class Employee(
                      address: String,
                      city: String
                    )
+
+/**
+  * A config glass used to set the command line arguments.
+  */
+case class Config(
+                   appName: String = "KafkaRandomFeeder",
+                   brokers: String = "" ,
+                   topics: String = "",
+                   groupId: String = "TODO_USE_A_DIFFERENT_GROUP_ID",
+                   wordsPerSecond: Float = 1.0F,
+                   batchSizeSeconds: Int = 1,
+                   cassandra: Boolean = false,
+                   kerberized: Boolean = false
+                 )
+
 
 /**
   * Application that generates random records and streams them to Cassandra.
@@ -149,7 +167,6 @@ object KafkaRandomFeeder {
 
     val sparkBuilder = SparkSession.builder().appName(config.appName)
 
-
     val spark = sparkBuilder
       .master("local[2]")
       .getOrCreate()
@@ -161,7 +178,7 @@ object KafkaRandomFeeder {
 
 
     val kafkaProperties = getKafkaProperties(config.brokers, config.kerberized)
-    val topic : String = config.topic
+    val topic : String = config.topics
 
     stream.foreachRDD { rdd =>
       rdd.foreachPartition { p =>
@@ -197,43 +214,172 @@ object KafkaRandomFeeder {
     return props
   }
 
-
-  case class Config(
-                     appName: String = "KafkaRandomFeeder",
-                     brokers: String = "" ,
-                     topic: String = "",
-                     kerberized: Boolean = false,
-                     wordsPerSecond: Float = 1.0F,
-                     batchSizeSeconds: Int = 1
-                   )
-
-
   def getParser(programName : String) : scopt.OptionParser[Config] = {
 
     val parser = new scopt.OptionParser[Config](programName) {
 
       opt[String]("appName").action( (x, c) =>
-      c.copy(appName = x) ).text("The application name to use for the Spark streaming app")
+        c.copy(appName = x) ).text("The application name to use for the Spark streaming app")
 
       opt[String]("brokers").required().action( (x, c) =>
-      c.copy(brokers = x) ).text("The broker connection information")
+        c.copy(brokers = x) ).text("The broker connection information")
 
-      opt[String]("topic").action( (x, c) =>
-      c.copy(topic = x) ).text("The topic to write to")
+      opt[String]("topics").action( (x, c) =>
+        c.copy(topics = x) ).text("The comma-separated list of topics to use")
 
       opt[Unit]('k', "kerberized").action( (_, c) =>
-      c.copy(kerberized = true) ).text("Enable Kerberized mode")
-
-      opt[Double]("wordsPerSecond").action( (x, c) =>
-      c.copy(wordsPerSecond = x.toFloat) ).text("The rate at which words should be used to Kafka")
+        c.copy(kerberized = true) ).text("Enable Kerberized mode")
 
       opt[Int]("batchSizeSeconds").action( (x, c) =>
-      c.copy(batchSizeSeconds = x) ).text("The window size to be used for the Spark streaming batch")
+        c.copy(batchSizeSeconds = x) ).text("The window size to be used for the Spark streaming batch")
 
     }
 
     return parser
   }
 
+}
+
+
+object KafkaWordCount extends Logging {
+  def main(args: Array[String]) : Unit = {
+    StreamingExamples.setStreamingLogLevels()
+
+    val config : Config = Config()
+    if (!getParser("KafkaWordCount").parse(args, config).isDefined) {
+      println("Error: Bad arguments")
+      System.exit(1)
+    }
+
+
+    val sparkBuilder = SparkSession.builder().appName(config.appName)
+
+    val spark = sparkBuilder
+      .master("local[2]")
+      .getOrCreate()
+
+    val streamingContext = new StreamingContext(spark.sparkContext, Seconds(config.batchSizeSeconds))
+
+    // Create direct kafka stream with brokers and topics
+    val topicsSet = config.topics.split(",").toSet
+
+    val kafkaParams = getKafkaProperties(config.brokers, config.groupId, config.kerberized)
+
+    // Set up the cassandra session:
+    val keyspaceName = "kafka_cassandra_stream"  // TODO: Make the keyspace name configurable
+    val tableName = "records"                    // TODO: Make the table name configurable
+    val cassandraColumns = SomeColumns("word" as "_1", "ts" as "_2", "count" as "_3")
+
+    CassandraConnector(spark.sparkContext.getConf).withSessionDo { session =>
+
+      session.execute(
+        s"""DROP KEYSPACE IF EXISTS $keyspaceName""")
+      session.execute(
+        s"""CREATE KEYSPACE $keyspaceName WITH REPLICATION = {
+          'class': 'SimpleStrategy',
+          'replication_factor': 3
+        }""")
+      session.execute(
+        s"""
+          CREATE TABLE IF NOT EXISTS $keyspaceName.$tableName (
+            ts timestamp,
+            word text,
+            count int,
+            PRIMARY KEY(word, ts)
+          );"""
+      )
+    }
+
+    val messages = KafkaUtils.createDirectStream[String, String](
+      streamingContext,
+      LocationStrategies.PreferConsistent,
+      ConsumerStrategies.Subscribe[String, String](topicsSet, kafkaParams))
+
+    val timestamp = new Date()getTime()
+    // Get the lines, split them into words, count the words and print
+    val lines = messages.map(_.value)
+    val words = lines.flatMap(_.split(" "))
+    val wordCounts = words
+      .map(x => (x, 1L))
+      .reduceByKey(_ + _)
+      .map(x => (timestamp, x._1, x._2))
+
+    wordCounts.foreachRDD(rdd => {
+      logInfo(s"Writing ${rdd.toString} to Cassandra")
+      rdd.saveToCassandra(keyspaceName, tableName, cassandraColumns)
+    })
+
+    wordCounts.print()
+
+    // Start the computation
+    streamingContext.start()
+    streamingContext.awaitTermination()
+  }
+
+  def getKafkaProperties(brokers : String, groupId: String, kerberized: Boolean) : Map[String, Object] = {
+
+    val props = Map[String, Object](
+      ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG -> brokers,
+      ConsumerConfig.GROUP_ID_CONFIG -> groupId,
+      ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG -> classOf[StringDeserializer],
+      ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG -> classOf[StringDeserializer])
+
+//    if (kerberized) {
+//      props.put("sasl.kerberos.service.name", "kafka")
+//      props.put("security.protocol", "SASL_PLAINTEXT")
+//      props.put("sasl.mechanism", "GSSAPI")
+//    }
+
+    return props
+  }
+
+  def getParser(programName : String) : scopt.OptionParser[Config] = {
+
+    val parser = new scopt.OptionParser[Config](programName) {
+
+      opt[String]("appName").action( (x, c) =>
+        c.copy(appName = x) ).text("The application name to use for the Spark streaming app")
+
+      opt[String]("brokers").required().action( (x, c) =>
+        c.copy(brokers = x) ).text("The broker connection information")
+
+      opt[String]("groupId").action( (x, c) =>
+        c.copy(groupId = x) ).text("The group ID for a consumer")
+
+      opt[String]("topics").action( (x, c) =>
+        c.copy(topics = x) ).text("The comma-separated list of topics to use")
+
+      opt[Unit]('k', "kerberized").action( (_, c) =>
+        c.copy(kerberized = true) ).text("Enable Kerberized mode")
+
+      opt[Double]("wordsPerSecond").action( (x, c) =>
+        c.copy(wordsPerSecond = x.toFloat) ).text("The rate at which words should be used to Kafka")
+
+      opt[Int]("batchSizeSeconds").action( (x, c) =>
+        c.copy(batchSizeSeconds = x) ).text("The window size to be used for the Spark streaming batch")
+
+    }
+
+    return parser
+  }
+
+
+}
+
+
+/** Utility functions for Spark Streaming examples. */
+object StreamingExamples extends Logging {
+
+  /** Set reasonable logging levels for streaming if the user has not configured log4j. */
+  def setStreamingLogLevels() : Unit = {
+    val log4jInitialized = Logger.getRootLogger.getAllAppenders.hasMoreElements
+    if (!log4jInitialized) {
+      // We first log something to initialize Spark's default logging, then we override the
+      // logging level.
+      logInfo("Setting log level to [WARN] for streaming example." +
+        " To override add a custom log4j.properties to the classpath.")
+      Logger.getRootLogger.setLevel(Level.WARN)
+    }
+  }
 }
 
