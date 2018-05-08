@@ -22,10 +22,10 @@ case class Config(
                    topics: String = "",
                    groupId: String = "TODO_USE_A_DIFFERENT_GROUP_ID",
                    wordsPerSecond: Float = 1.0F,
-                   batchSizeSeconds: Int = 1,
+                   batchSizeSeconds: Long = 1L,
                    cassandraKeyspace: String = "kafka_cassandra_stream",
                    cassandraTable: String = "records",
-                   cassandra: Boolean = false,
+                   cassandra: Boolean = true,
                    kerberized: Boolean = false,
                    isLocal: Boolean = true
                  )
@@ -105,29 +105,33 @@ object KafkaWordCount extends Logging {
 
     val kafkaParams = getKafkaProperties(config.brokers, config.groupId, config.kerberized)
 
+    val cassandraEnabled : Boolean = config.cassandra
+
     // Set up the cassandra session:
     val keyspaceName = config.cassandraKeyspace
     val tableName = config.cassandraTable
     val cassandraColumns = SomeColumns("word" as "_1", "ts" as "_2", "count" as "_3")
 
-    CassandraConnector(spark.sparkContext.getConf).withSessionDo { session =>
+    if (cassandraEnabled) {
+      CassandraConnector(spark.sparkContext.getConf).withSessionDo { session =>
 
-      session.execute(
-        s"""DROP KEYSPACE IF EXISTS $keyspaceName""")
-      session.execute(
-        s"""CREATE KEYSPACE $keyspaceName WITH REPLICATION = {
-          'class': 'SimpleStrategy',
-          'replication_factor': 3
-        }""")
-      session.execute(
-        s"""
-          CREATE TABLE IF NOT EXISTS $keyspaceName.$tableName (
-            ts timestamp,
-            word text,
-            count int,
-            PRIMARY KEY(word, ts)
-          );"""
-      )
+        session.execute(
+          s"""DROP KEYSPACE IF EXISTS $keyspaceName""")
+        session.execute(
+          s"""CREATE KEYSPACE $keyspaceName WITH REPLICATION = {
+            'class': 'SimpleStrategy',
+            'replication_factor': 3
+          }""")
+        session.execute(
+          s"""
+            CREATE TABLE IF NOT EXISTS $keyspaceName.$tableName (
+              ts timestamp,
+              word text,
+              count int,
+              PRIMARY KEY(word, ts)
+            );"""
+        )
+      }
     }
 
     val messages = KafkaUtils.createDirectStream[String, String](
@@ -144,10 +148,12 @@ object KafkaWordCount extends Logging {
       .reduceByKey(_ + _)
       .map(x => (timestamp, x._1, x._2))
 
-    wordCounts.foreachRDD(rdd => {
-      logInfo(s"Writing ${rdd.toString} to Cassandra")
-      rdd.saveToCassandra(keyspaceName, tableName, cassandraColumns)
-    })
+    if (cassandraEnabled) {
+      wordCounts.foreachRDD(rdd => {
+        logInfo(s"Writing ${rdd.toString} to Cassandra")
+        rdd.saveToCassandra(keyspaceName, tableName, cassandraColumns)
+      })
+    }
 
     wordCounts.print()
 
@@ -230,6 +236,9 @@ object StreamingExamples extends Logging {
         opt[Double]("wordsPerSecond").action( (x, c) =>
           c.copy(wordsPerSecond = x.toFloat) ).text("The rate at which words should be used to Kafka")
       } else {
+        opt[Unit]("noCassandra").action( (_, c) =>
+          c.copy(cassandra = false) ).text("Disable cassandra usage")
+
         opt[String]("groupId").action( (x, c) =>
           c.copy(groupId = x) ).text("The group ID for a consumer")
 
