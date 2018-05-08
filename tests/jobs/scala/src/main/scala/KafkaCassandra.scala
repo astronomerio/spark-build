@@ -27,18 +27,21 @@ case class Config(
                    cassandraTable: String = "records",
                    cassandra: Boolean = true,
                    kerberized: Boolean = false,
-                   isLocal: Boolean = true
+                   isLocal: Boolean = false
                  )
 
 object KafkaRandomFeeder extends Logging {
   def main(args: Array[String]): Unit = {
-    StreamingExamples.setStreamingLogLevels()
+    StreamingExamples.setStreamingLogLevels(Level.WARN)
 
-    val config : Config = Config()
-    if (StreamingExamples.getParser( this.getClass.getSimpleName, true ).parse(args, config).isEmpty) {
+    val parser = StreamingExamples.getParser( this.getClass.getSimpleName, true ).parse(args, Config())
+    if (parser.isEmpty) {
       logError("Bad arguments")
       System.exit(1)
     }
+
+    val config = parser.get
+    println(s"Using config: $config")
 
     val spark = StreamingExamples.createSparkSession(config)
 
@@ -48,6 +51,7 @@ object KafkaRandomFeeder extends Logging {
     val stream = streamingContext.receiverStream(new RandomWordReceiver(wordsPerSecond))
 
     val kafkaProperties = getKafkaProperties(config.brokers, config.kerberized)
+    println(s"${kafkaProperties}")
     val topic : String = config.topics
 
     stream.foreachRDD { rdd =>
@@ -55,7 +59,7 @@ object KafkaRandomFeeder extends Logging {
 
         val producer = new KafkaProducer[String, String](kafkaProperties)
         partition.foreach { word =>
-          logInfo(s"Writing $word to Kafka")
+          println(s"Writing $word to Kafka")
           val msg = new ProducerRecord[String, String](topic, null, word)
           producer.send(msg)
         }
@@ -88,13 +92,16 @@ object KafkaRandomFeeder extends Logging {
 
 object KafkaWordCount extends Logging {
   def main(args: Array[String]) : Unit = {
-    StreamingExamples.setStreamingLogLevels()
+    StreamingExamples.setStreamingLogLevels(Level.WARN)
 
-    val config : Config = Config()
-    if (StreamingExamples.getParser( this.getClass.toString(), false ).parse(args, config).isEmpty) {
+    val parser = StreamingExamples.getParser( this.getClass.getSimpleName, false ).parse(args, Config())
+    if (parser.isEmpty) {
       logError("Bad arguments")
       System.exit(1)
     }
+
+    val config = parser.get
+    println(s"Using config: $config")
 
     val spark = StreamingExamples.createSparkSession(config)
 
@@ -110,7 +117,7 @@ object KafkaWordCount extends Logging {
     // Set up the cassandra session:
     val keyspaceName = config.cassandraKeyspace
     val tableName = config.cassandraTable
-    val cassandraColumns = SomeColumns("word" as "_1", "ts" as "_2", "count" as "_3")
+    val cassandraColumns = SomeColumns("ts" as "_1", "word" as "_2", "count" as "_3")
 
     if (cassandraEnabled) {
       CassandraConnector(spark.sparkContext.getConf).withSessionDo { session =>
@@ -139,7 +146,7 @@ object KafkaWordCount extends Logging {
       LocationStrategies.PreferConsistent,
       ConsumerStrategies.Subscribe[String, String](topicsSet, kafkaParams))
 
-    val timestamp = new Date()getTime()
+    val timestamp = new Date().getTime()
     // Get the lines, split them into words, count the words and print
     val lines = messages.map(_.value)
     val words = lines.flatMap(_.split(" "))
@@ -186,14 +193,14 @@ object KafkaWordCount extends Logging {
 object StreamingExamples extends Logging {
 
   /** Set reasonable logging levels for streaming if the user has not configured log4j. */
-  def setStreamingLogLevels() : Unit = {
+  def setStreamingLogLevels(level: Level) : Unit = {
     val log4jInitialized = Logger.getRootLogger.getAllAppenders.hasMoreElements
     if (!log4jInitialized) {
       // We first log something to initialize Spark's default logging, then we override the
       // logging level.
-      logInfo("Setting log level to [WARN] for streaming example." +
+      logInfo(s"Setting log level to [$level] for streaming example." +
         " To override add a custom log4j.properties to the classpath.")
-      Logger.getRootLogger.setLevel(Level.WARN)
+      Logger.getRootLogger.setLevel(level)
     }
   }
 
@@ -204,6 +211,7 @@ object StreamingExamples extends Logging {
     var sparkBuilder = SparkSession.builder().appName(config.appName)
 
     if (config.isLocal) {
+      logInfo("Running in local mode")
       sparkBuilder = sparkBuilder.master("local[1]")
     }
 
@@ -226,11 +234,11 @@ object StreamingExamples extends Logging {
       opt[Unit]('k', "kerberized").action( (_, c) =>
         c.copy(kerberized = true) ).text("Enable Kerberized mode")
 
-      opt[Unit]('r', "isRemote").action( (_, c) =>
-        c.copy(isLocal = false) ).text("Enable remote mode")
+      opt[Unit]("isLocal").action( (_, c) =>
+        c.copy(isLocal = true) ).text("Enable remote mode")
 
       opt[Int]("batchSizeSeconds").action( (x, c) =>
-        c.copy(batchSizeSeconds = x) ).text("The window size to be used for the Spark streaming batch")
+        c.copy(batchSizeSeconds = x.toLong) ).text("The window size to be used for the Spark streaming batch")
 
       if (isSource) {
         opt[Double]("wordsPerSecond").action( (x, c) =>
